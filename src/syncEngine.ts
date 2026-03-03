@@ -1,5 +1,5 @@
 import { App, TFile } from "obsidian";
-import { ObsidianTask, RemindersSyncSettings, SyncEntry } from "./types";
+import { ObsidianTask, RemindersSyncSettings } from "./types";
 import { NOTICE_PREFIX } from "./constants";
 import {
 	ensureListExists,
@@ -27,9 +27,7 @@ export class SyncEngine {
 	}
 
 	async syncAll(): Promise<void> {
-		if (this.isSyncing) return;
-		this.isSyncing = true;
-		try {
+		await this.withLock(async () => {
 			const files = this.app.vault.getMarkdownFiles();
 			for (const file of files) {
 				const cache = this.app.metadataCache.getFileCache(file);
@@ -44,139 +42,140 @@ export class SyncEngine {
 					);
 				}
 			}
-		} finally {
-			this.isSyncing = false;
-		}
+		});
 	}
 
 	async syncNote(file: TFile): Promise<void> {
-		if (this.isSyncing) return;
+		await this.withLock(() => this.syncNoteInternal(file));
+	}
+
+	/**
+	 * Acquires the sync lock for the duration of `fn`.
+	 * Returns without calling `fn` if a sync is already in progress.
+	 */
+	private async withLock<T>(fn: () => Promise<T>): Promise<T | undefined> {
+		if (this.isSyncing) return undefined;
 		this.isSyncing = true;
 		try {
-			await this.syncNoteInternal(file);
+			return await fn();
 		} finally {
 			this.isSyncing = false;
 		}
 	}
 
 	private async syncNoteInternal(file: TFile): Promise<void> {
-		const listName = file.basename;
-		await ensureListExists(listName);
-
+		const { basename: listName, path: filePath } = file;
 		const content = await this.app.vault.read(file);
-		const tasks = extractTasksFromContent(content, file.path);
+		const tasks = extractTasksFromContent(content, filePath);
 
-		const currentHashes = await this.pushTasks(file, listName, tasks);
-
-		const staleHashes = this.stateManager.staleHashesForFile(
-			file.path,
-			currentHashes
+		// Compute hashes once — reused by push, stale-cleanup, and pull
+		const hashes = tasks.map((t) =>
+			SyncStateManager.computeHash(t.displayText, t.filePath)
 		);
-		for (const hash of staleHashes) {
+
+		await ensureListExists(listName);
+		await this.pushTasks(listName, filePath, tasks, hashes);
+
+		const currentHashSet = new Set(hashes);
+		for (const hash of this.stateManager.staleHashesForFile(
+			filePath,
+			currentHashSet
+		)) {
 			this.stateManager.deleteEntry(hash);
 		}
 
-		const { updatedContent, modified } = await this.pullCompletions(
-			file,
+		const updatedContent = await this.pullCompletions(
 			listName,
 			content,
-			tasks
+			tasks,
+			hashes
 		);
-
-		if (modified) {
+		if (updatedContent !== content) {
 			await this.app.vault.modify(file, updatedContent);
 		}
 
 		await this.stateManager.save();
 	}
 
-	/** Push Obsidian tasks → Apple Reminders. Returns the set of current task hashes. */
+	/** Push direction: Obsidian → Apple Reminders. */
 	private async pushTasks(
-		file: TFile,
 		listName: string,
-		tasks: ObsidianTask[]
-	): Promise<Set<string>> {
-		const currentHashes = new Set<string>();
-
-		for (const task of tasks) {
-			const hash = SyncStateManager.computeHash(
-				task.displayText,
-				task.filePath
-			);
-			currentHashes.add(hash);
-
+		filePath: string,
+		tasks: ObsidianTask[],
+		hashes: string[]
+	): Promise<void> {
+		for (let i = 0; i < tasks.length; i++) {
+			const task = tasks[i];
+			const hash = hashes[i];
 			const existing = this.stateManager.getEntry(hash);
 
 			if (!existing) {
-				if (task.isCompleted) continue; // already done, nothing to push
+				if (task.isCompleted) continue; // already done — nothing to push
 				await createReminder(listName, task);
-				const entry: SyncEntry = {
+				this.stateManager.setEntry({
 					taskHash: hash,
 					reminderName: task.displayText,
 					listName,
-					filePath: file.path,
+					filePath,
 					lastSyncedAt: Date.now(),
 					pushedAsCompleted: false,
-				};
-				this.stateManager.setEntry(entry);
+				});
 			} else if (!existing.pushedAsCompleted && task.isCompleted) {
-				// Task completed in Obsidian — reflect it in Reminders
+				// Completed in Obsidian — mirror it to Reminders
 				await markReminderComplete(listName, existing.reminderName);
 				existing.pushedAsCompleted = true;
 				existing.lastSyncedAt = Date.now();
 				this.stateManager.setEntry(existing);
 			}
 		}
-
-		return currentHashes;
 	}
 
-	/** Pull completions from Apple Reminders → Obsidian. Returns updated content and whether it changed. */
+	/**
+	 * Pull direction: Apple Reminders → Obsidian (completions only).
+	 * Returns the original `content` reference if nothing changed.
+	 */
 	private async pullCompletions(
-		_file: TFile,
 		listName: string,
 		content: string,
-		tasks: ObsidianTask[]
-	): Promise<{ updatedContent: string; modified: boolean }> {
+		tasks: ObsidianTask[],
+		hashes: string[]
+	): Promise<string> {
 		const reminders = await getRemindersInList(listName);
-		const completedInReminders = new Set(
+		const completedNames = new Set(
 			reminders.filter((r) => r.isCompleted).map((r) => r.name)
 		);
 
-		let updatedContent = content;
+		if (completedNames.size === 0) return content;
+
+		const lines = content.split("\n");
 		let modified = false;
 
-		for (const task of tasks) {
-			if (task.isCompleted) continue; // already done in Obsidian
+		for (let i = 0; i < tasks.length; i++) {
+			const task = tasks[i];
+			if (task.isCompleted) continue;
 
-			const hash = SyncStateManager.computeHash(
-				task.displayText,
-				task.filePath
-			);
-			const entry = this.stateManager.getEntry(hash);
+			const entry = this.stateManager.getEntry(hashes[i]);
 			if (!entry || entry.pushedAsCompleted) continue;
+			if (!completedNames.has(entry.reminderName)) continue;
 
-			if (completedInReminders.has(entry.reminderName)) {
-				const lines = updatedContent.split("\n");
-				if (
-					task.lineNumber >= 0 &&
-					task.lineNumber < lines.length &&
-					/- \[ \]/.test(lines[task.lineNumber])
-				) {
-					lines[task.lineNumber] = lines[task.lineNumber].replace(
-						/- \[ \]/,
-						"- [x]"
-					);
-					updatedContent = lines.join("\n");
-					modified = true;
-				}
-
-				entry.pushedAsCompleted = true;
-				entry.lastSyncedAt = Date.now();
-				this.stateManager.setEntry(entry);
+			const { lineNumber } = task;
+			if (
+				lineNumber >= 0 &&
+				lineNumber < lines.length &&
+				/- \[ \]/.test(lines[lineNumber])
+			) {
+				lines[lineNumber] = lines[lineNumber].replace(
+					/- \[ \]/,
+					"- [x]"
+				);
+				modified = true;
 			}
+
+			entry.pushedAsCompleted = true;
+			entry.lastSyncedAt = Date.now();
+			this.stateManager.setEntry(entry);
 		}
 
-		return { updatedContent, modified };
+		return modified ? lines.join("\n") : content;
 	}
 }
