@@ -1,0 +1,11 @@
+{
+  "id": "obsidian-reminders-sync",
+  "name": "Reminders Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Sync reminders between Obsidian and your reminders app.",
+  "author": "Oleksii Tymchenko",
+  "authorUrl": "",
+  "fundingUrl": "",
+  "isDesktopOnly": false
+}
