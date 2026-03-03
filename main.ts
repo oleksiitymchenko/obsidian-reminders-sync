@@ -4,6 +4,15 @@ import { DEFAULT_SETTINGS, RemindersSyncSettingTab } from "./src/settings";
 import { SyncStateManager } from "./src/syncState";
 import { SyncEngine } from "./src/syncEngine";
 import { noteIsTaggedForSync } from "./src/taskParser";
+import {
+	CMD_SYNC_ALL_ID,
+	CMD_SYNC_ALL_NAME,
+	MD_EXTENSION,
+	NOTICE_DONE,
+	NOTICE_PREFIX,
+	RIBBON_ICON,
+	RIBBON_TOOLTIP,
+} from "./src/constants";
 
 export default class RemindersSyncPlugin extends Plugin {
 	settings: RemindersSyncSettings;
@@ -25,18 +34,15 @@ export default class RemindersSyncPlugin extends Plugin {
 
 		this.addSettingTab(new RemindersSyncSettingTab(this.app, this));
 
-		// Ribbon button for immediate sync
-		this.addRibbonIcon("refresh-cw", "Sync Reminders now", async () => {
-			await this.syncEngine.syncAll();
-			new Notice("Reminders Sync: Done.");
+		this.addRibbonIcon(RIBBON_ICON, RIBBON_TOOLTIP, () => {
+			void this.triggerSyncAll();
 		});
 
 		this.addCommand({
-			id: "sync-all-reminders",
-			name: "Sync all tagged notes to Apple Reminders",
-			callback: async () => {
-				await this.syncEngine.syncAll();
-				new Notice("Reminders Sync: Done.");
+			id: CMD_SYNC_ALL_ID,
+			name: CMD_SYNC_ALL_NAME,
+			callback: () => {
+				void this.triggerSyncAll();
 			},
 		});
 
@@ -50,7 +56,7 @@ export default class RemindersSyncPlugin extends Plugin {
 					async (file: TFile) => {
 						if (
 							!(file instanceof TFile) ||
-							file.extension !== "md"
+							file.extension !== MD_EXTENSION
 						)
 							return;
 						if (!this.settings.autoSyncOnSave) return;
@@ -63,7 +69,14 @@ export default class RemindersSyncPlugin extends Plugin {
 							)
 						)
 							return;
-						await this.syncEngine.syncNote(file);
+						try {
+							await this.syncEngine.syncNote(file);
+						} catch (err) {
+							console.error(
+								`${NOTICE_PREFIX}auto-sync error for ${file.path}:`,
+								err
+							);
+						}
 					},
 					this.settings.autoSyncDebounceMs,
 					true
@@ -74,14 +87,21 @@ export default class RemindersSyncPlugin extends Plugin {
 		// Update sync state when notes are renamed
 		this.registerEvent(
 			this.app.vault.on("rename", async (file, oldPath) => {
-				if (!(file instanceof TFile) || file.extension !== "md")
+				if (!(file instanceof TFile) || file.extension !== MD_EXTENSION)
 					return;
-				this.stateManager.handleRename(
-					oldPath,
-					file.path,
-					file.basename
-				);
-				await this.stateManager.save();
+				try {
+					this.stateManager.handleRename(
+						oldPath,
+						file.path,
+						file.basename
+					);
+					await this.stateManager.save();
+				} catch (err) {
+					console.error(
+						`${NOTICE_PREFIX}rename handler error:`,
+						err
+					);
+				}
 			})
 		);
 	}
@@ -95,7 +115,9 @@ export default class RemindersSyncPlugin extends Plugin {
 		const sec = this.settings.periodicSyncIntervalSec;
 		if (sec > 0) {
 			this.periodicSyncIntervalId = window.setInterval(() => {
-				this.syncEngine.syncAll();
+				void this.syncEngine.syncAll().catch((err) =>
+					console.error(`${NOTICE_PREFIX}periodic sync error:`, err)
+				);
 			}, sec * 1000);
 		}
 	}
@@ -105,6 +127,11 @@ export default class RemindersSyncPlugin extends Plugin {
 			window.clearInterval(this.periodicSyncIntervalId);
 			this.periodicSyncIntervalId = null;
 		}
+	}
+
+	private async triggerSyncAll(): Promise<void> {
+		await this.syncEngine.syncAll();
+		new Notice(NOTICE_DONE);
 	}
 
 	async loadSettings() {

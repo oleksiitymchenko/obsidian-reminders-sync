@@ -1,9 +1,6 @@
 import { CachedMetadata } from "obsidian";
 import { ObsidianTask } from "./types";
-
-const TASK_INCOMPLETE = /^(\s*)-\s\[\s\]\s(.+)$/;
-const TASK_COMPLETE = /^(\s*)-\s\[x\]\s(.+)$/i;
-const DUE_DATE_EMOJI = /📅\s*(\d{4}-\d{2}-\d{2})/;
+import { TASK_INCOMPLETE_RE, TASK_COMPLETE_RE, DUE_DATE_RE } from "./constants";
 
 export function noteIsTaggedForSync(
 	cache: CachedMetadata | null,
@@ -25,18 +22,18 @@ export function extractTasksFromContent(
 
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
-		const incompleteMatch = TASK_INCOMPLETE.exec(line);
-		const completeMatch = TASK_COMPLETE.exec(line);
+		const incompleteMatch = TASK_INCOMPLETE_RE.exec(line);
+		const completeMatch = TASK_COMPLETE_RE.exec(line);
 		const match = incompleteMatch ?? completeMatch;
 		if (!match) continue;
 
 		const rawText = match[2];
-		const dueDateMatch = DUE_DATE_EMOJI.exec(rawText);
+		const dueDateMatch = DUE_DATE_RE.exec(rawText);
 		// Use noon UTC to avoid timezone-related date shifts
 		const dueDate = dueDateMatch
 			? new Date(dueDateMatch[1] + "T12:00:00Z")
 			: null;
-		const displayText = rawText.replace(DUE_DATE_EMOJI, "").trim();
+		const displayText = rawText.replace(DUE_DATE_RE, "").trim();
 
 		tasks.push({
 			text: rawText,

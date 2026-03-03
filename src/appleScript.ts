@@ -2,6 +2,14 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { Notice } from "obsidian";
 import { AppleReminder, ObsidianTask } from "./types";
+import {
+	AS_EXEC_TIMEOUT_MS,
+	AS_OUTPUT_DELIMITER,
+	NOTICE_PERMISSION_DENIED,
+	NOTICE_PERMISSION_DURATION_MS,
+	NOTICE_TIMEOUT,
+	NOTICE_TIMEOUT_DURATION_MS,
+} from "./constants";
 
 const execAsync = promisify(exec);
 
@@ -13,30 +21,24 @@ async function runAppleScript(script: string): Promise<string> {
 	try {
 		const { stdout, stderr } = await execAsync(
 			`osascript <<'APPLESCRIPT'\n${script}\nAPPLESCRIPT`,
-			{ timeout: 10_000 }
+			{ timeout: AS_EXEC_TIMEOUT_MS }
 		);
 		if (stderr && stderr.trim()) {
 			throw new Error(stderr.trim());
 		}
 		return stdout.trim();
-	} catch (err: any) {
-		const msg: string = err?.message ?? "";
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : String(err);
+		const killed = (err as { killed?: boolean }).killed === true;
 		if (
 			msg.includes("-1743") ||
 			msg.toLowerCase().includes("not authorized")
 		) {
-			new Notice(
-				"Reminders Sync: Permission denied. Please allow Obsidian to " +
-					"control Reminders in System Settings → Privacy & Security → Automation.",
-				10_000
-			);
+			new Notice(NOTICE_PERMISSION_DENIED, NOTICE_PERMISSION_DURATION_MS);
 			return "";
 		}
-		if (err.killed || msg.includes("ETIMEDOUT")) {
-			new Notice(
-				"Reminders Sync: Apple Reminders timed out. Is the app responsive?",
-				8_000
-			);
+		if (killed || msg.includes("ETIMEDOUT")) {
+			new Notice(NOTICE_TIMEOUT, NOTICE_TIMEOUT_DURATION_MS);
 			return "";
 		}
 		throw err;
@@ -62,7 +64,7 @@ export async function getRemindersInList(
 		repeat with r in reminders of list "${name}"
 			set rName to name of r
 			set rDone to completed of r as string
-			set output to output & rName & "|||" & rDone & "\n"
+			set output to output & rName & "${AS_OUTPUT_DELIMITER}" & rDone & "\n"
 		end repeat
 	end if
 	return output
@@ -72,11 +74,11 @@ end tell`);
 
 	return output
 		.split("\n")
-		.filter((line) => line.includes("|||"))
+		.filter((line) => line.includes(AS_OUTPUT_DELIMITER))
 		.map((line) => {
-			const separatorIdx = line.lastIndexOf("|||");
+			const separatorIdx = line.lastIndexOf(AS_OUTPUT_DELIMITER);
 			const reminderName = line.slice(0, separatorIdx).trim();
-			const done = line.slice(separatorIdx + 3).trim();
+			const done = line.slice(separatorIdx + AS_OUTPUT_DELIMITER.length).trim();
 			return {
 				name: reminderName,
 				isCompleted: done === "true",

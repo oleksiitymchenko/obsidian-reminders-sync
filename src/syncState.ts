@@ -1,11 +1,10 @@
 import { createHash } from "crypto";
 import { Plugin } from "obsidian";
 import { SyncEntry, SyncState } from "./types";
-
-const STATE_VERSION = 1;
+import { SYNC_STATE_VERSION, TASK_HASH_LENGTH } from "./constants";
 
 export class SyncStateManager {
-	private state: SyncState = { version: STATE_VERSION, entries: {} };
+	private state: SyncState = { version: SYNC_STATE_VERSION, entries: {} };
 	private plugin: Plugin;
 
 	constructor(plugin: Plugin) {
@@ -15,10 +14,10 @@ export class SyncStateManager {
 	async load(): Promise<void> {
 		const data = (await this.plugin.loadData()) ?? {};
 		const raw = data.syncState;
-		if (raw && raw.version === STATE_VERSION) {
+		if (raw && raw.version === SYNC_STATE_VERSION) {
 			this.state = raw;
 		} else {
-			this.state = { version: STATE_VERSION, entries: {} };
+			this.state = { version: SYNC_STATE_VERSION, entries: {} };
 		}
 	}
 
@@ -32,7 +31,7 @@ export class SyncStateManager {
 		return createHash("sha256")
 			.update(displayText + "\0" + filePath)
 			.digest("hex")
-			.slice(0, 16);
+			.slice(0, TASK_HASH_LENGTH);
 	}
 
 	hasEntry(hash: string): boolean {

@@ -1,5 +1,6 @@
 import { App, TFile } from "obsidian";
-import { RemindersSyncSettings, SyncEntry } from "./types";
+import { ObsidianTask, RemindersSyncSettings, SyncEntry } from "./types";
+import { NOTICE_PREFIX } from "./constants";
 import {
 	ensureListExists,
 	getRemindersInList,
@@ -34,7 +35,14 @@ export class SyncEngine {
 				const cache = this.app.metadataCache.getFileCache(file);
 				if (!noteIsTaggedForSync(cache, this.settings.syncTag))
 					continue;
-				await this.syncNoteInternal(file);
+				try {
+					await this.syncNoteInternal(file);
+				} catch (err) {
+					console.error(
+						`${NOTICE_PREFIX}sync failed for ${file.path}:`,
+						err
+					);
+				}
 			}
 		} finally {
 			this.isSyncing = false;
@@ -57,9 +65,39 @@ export class SyncEngine {
 
 		const content = await this.app.vault.read(file);
 		const tasks = extractTasksFromContent(content, file.path);
+
+		const currentHashes = await this.pushTasks(file, listName, tasks);
+
+		const staleHashes = this.stateManager.staleHashesForFile(
+			file.path,
+			currentHashes
+		);
+		for (const hash of staleHashes) {
+			this.stateManager.deleteEntry(hash);
+		}
+
+		const { updatedContent, modified } = await this.pullCompletions(
+			file,
+			listName,
+			content,
+			tasks
+		);
+
+		if (modified) {
+			await this.app.vault.modify(file, updatedContent);
+		}
+
+		await this.stateManager.save();
+	}
+
+	/** Push Obsidian tasks → Apple Reminders. Returns the set of current task hashes. */
+	private async pushTasks(
+		file: TFile,
+		listName: string,
+		tasks: ObsidianTask[]
+	): Promise<Set<string>> {
 		const currentHashes = new Set<string>();
 
-		// ── Push: Obsidian → Apple Reminders ──────────────────────────────────
 		for (const task of tasks) {
 			const hash = SyncStateManager.computeHash(
 				task.displayText,
@@ -70,7 +108,6 @@ export class SyncEngine {
 			const existing = this.stateManager.getEntry(hash);
 
 			if (!existing) {
-				// Never synced before
 				if (task.isCompleted) continue; // already done, nothing to push
 				await createReminder(listName, task);
 				const entry: SyncEntry = {
@@ -83,32 +120,31 @@ export class SyncEngine {
 				};
 				this.stateManager.setEntry(entry);
 			} else if (!existing.pushedAsCompleted && task.isCompleted) {
-				// Task was completed in Obsidian — reflect it in Reminders
+				// Task completed in Obsidian — reflect it in Reminders
 				await markReminderComplete(listName, existing.reminderName);
 				existing.pushedAsCompleted = true;
 				existing.lastSyncedAt = Date.now();
 				this.stateManager.setEntry(existing);
 			}
-			// else: already in sync, nothing to do
 		}
 
-		// Remove state entries for tasks that no longer exist in the note
-		const staleHashes = this.stateManager.staleHashesForFile(
-			file.path,
-			currentHashes
-		);
-		for (const hash of staleHashes) {
-			this.stateManager.deleteEntry(hash);
-		}
+		return currentHashes;
+	}
 
-		// ── Pull: Apple Reminders → Obsidian (completions only) ───────────────
+	/** Pull completions from Apple Reminders → Obsidian. Returns updated content and whether it changed. */
+	private async pullCompletions(
+		_file: TFile,
+		listName: string,
+		content: string,
+		tasks: ObsidianTask[]
+	): Promise<{ updatedContent: string; modified: boolean }> {
 		const reminders = await getRemindersInList(listName);
 		const completedInReminders = new Set(
 			reminders.filter((r) => r.isCompleted).map((r) => r.name)
 		);
 
 		let updatedContent = content;
-		let contentModified = false;
+		let modified = false;
 
 		for (const task of tasks) {
 			if (task.isCompleted) continue; // already done in Obsidian
@@ -121,7 +157,6 @@ export class SyncEngine {
 			if (!entry || entry.pushedAsCompleted) continue;
 
 			if (completedInReminders.has(entry.reminderName)) {
-				// Completed in Reminders but not yet in Obsidian — check it off
 				const lines = updatedContent.split("\n");
 				if (
 					task.lineNumber >= 0 &&
@@ -133,7 +168,7 @@ export class SyncEngine {
 						"- [x]"
 					);
 					updatedContent = lines.join("\n");
-					contentModified = true;
+					modified = true;
 				}
 
 				entry.pushedAsCompleted = true;
@@ -142,10 +177,6 @@ export class SyncEngine {
 			}
 		}
 
-		if (contentModified) {
-			await this.app.vault.modify(file, updatedContent);
-		}
-
-		await this.stateManager.save();
+		return { updatedContent, modified };
 	}
 }

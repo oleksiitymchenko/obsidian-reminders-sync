@@ -1,9 +1,10 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type RemindersSyncPlugin from "../main";
 import { RemindersSyncSettings } from "./types";
+import { DEFAULT_SYNC_TAG, PLUGIN_NAME } from "./constants";
 
 export const DEFAULT_SETTINGS: RemindersSyncSettings = {
-	syncTag: "sync-reminders",
+	syncTag: DEFAULT_SYNC_TAG,
 	autoSyncOnSave: true,
 	autoSyncDebounceMs: 2000,
 	periodicSyncIntervalSec: 0,
@@ -20,7 +21,7 @@ export class RemindersSyncSettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
-		containerEl.createEl("h2", { text: "Reminders Sync" });
+		containerEl.createEl("h2", { text: PLUGIN_NAME });
 
 		new Setting(containerEl)
 			.setName("Sync tag")
@@ -34,7 +35,7 @@ export class RemindersSyncSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.syncTag)
 					.onChange(async (value) => {
 						this.plugin.settings.syncTag =
-							value.trim() || "sync-reminders";
+							value.trim() || DEFAULT_SYNC_TAG;
 						await this.plugin.saveSettings();
 					})
 			);
