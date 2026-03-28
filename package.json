@@ -1,5 +1,5 @@
 {
-  "name": "obsidian-reminders-sync",
+  "name": "reminders-sync",
   "version": "1.0.0",
   "description": "Sync reminders between Obsidian and your reminders app.",
   "main": "main.js",

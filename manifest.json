@@ -1,9 +1,9 @@
 {
-  "id": "obsidian-reminders-sync",
+  "id": "reminders-sync",
   "name": "Reminders Sync",
   "version": "1.0.0",
   "minAppVersion": "1.0.0",
-  "description": "Two-way sync Obsidian tasks to Apple Reminders. Pushes tagged-note checkboxes to a Reminders list and pulls completions back. macOS only.",
+  "description": "Two-way sync tasks to Apple Reminders. Pushes tagged-note checkboxes to a Reminders list and pulls completions back. macOS only.",
   "author": "Oleksii Tymchenko",
   "authorUrl": "https://github.com/oleksiitymchenko",
   "isDesktopOnly": true
